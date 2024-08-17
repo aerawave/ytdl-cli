@@ -1,0 +1,1 @@
+Start-Process -FilePath "<PATH_TO_YOUR_EXE>" -ArgumentList $args -NoNewWindow
