@@ -15,15 +15,16 @@ namespace ytdl
             var argl = args.ToList();
 
             var options = new Dictionary<string, string>();
-            var options_lengths = new Dictionary<string, int>
+            var available_options = new string[]
             {
-                { "o", 1 },
-                { "ffmpeg", 1 }
+                "o",
+                "ffmpeg"
             };
 
 
-            var look_for_options = true;
 
+            // Search for the above options...
+            var look_for_options = true;
             while (look_for_options)
             {
                 look_for_options = false;
@@ -33,7 +34,7 @@ namespace ytdl
                     if (argl[i].StartsWith('-'))
                     {
                         var option = argl[i].TrimStart('-');
-                        if (!options_lengths.TryGetValue(option, out int option_length))
+                        if (!available_options.Contains(option))
                             throw new Exception($"Bad option: {option}");
 
                         options.Add(option, argl[i + 1]);
@@ -46,9 +47,11 @@ namespace ytdl
                 }
             }
 
+            // Defaults output to downloads folder
             if (!options.TryGetValue("o", out string? output_location))
                 output_location = "%USERPROFILE%/Downloads";
 
+            // Update ffmpeg location if provided
             if (options.TryGetValue("ffmpeg", out string? ffmpeg_location))
                 FFMPEG_EXE = ffmpeg_location;
 
@@ -60,6 +63,7 @@ namespace ytdl
                 return;
             }
 
+            // exctract video IDs from provided URIs
             foreach (var url in argl)
             {
                 try
@@ -67,7 +71,7 @@ namespace ytdl
                     video_ids.Add(GetVideoId(url));
                 } catch (Exception exception)
                 {
-                    Console.WriteLine(exception.Message);
+                    Console.WriteLine($"There was an error extracting video ID from '{url}': {exception.Message}");
                 }
             }
 
@@ -80,10 +84,19 @@ namespace ytdl
             foreach (var video_id in video_ids)
                 tasks.Add(DownloadVideoAsync(video_id, out_dir, out_file, out_error));
 
-
-
             Task.WaitAll([.. tasks]);
         }
+
+        /// <summary>
+        /// Attempts to extract the video ID from a provided youtube video URL. <para />
+        /// Supported URL types: <para />
+        /// - https://youtube.com/watch?v=&lt;VIDEO_ID&gt; <para />
+        /// - https://youtube.com/embed/&lt;VIDEO_ID&gt; <para />
+        /// - https://youtu.be/&lt;VIDEO_ID&gt; <para />
+        /// </summary>
+        /// <param name="url"></param>
+        /// <returns></returns>
+        /// <exception cref="Exception"></exception>
         static string GetVideoId(string url)
         {
             var uri = new Uri(url);
@@ -91,7 +104,7 @@ namespace ytdl
 
             if (uri.Host.Contains("youtube.com"))
             {
-                if (uri.AbsolutePath == "/watch")
+                if (uri.AbsolutePath == "/watch") // youtube.com/watch?v=<VIDEO_ID>
                 {
                     var veq_index = uri.Query.IndexOf("v=");
                     if (veq_index == -1)
@@ -101,11 +114,11 @@ namespace ytdl
                     {
                         video_id = uri.Query[(veq_index + 2)..];
                     }
-                } else if (uri.AbsolutePath.StartsWith("/embed"))
+                } else if (uri.AbsolutePath.StartsWith("/embed")) // youtube.com/embed/<VIDEO_ID>
                 {
                     video_id = uri.AbsolutePath[7..];
                 }
-            } else if(uri.Host.Contains("youtu.be"))
+            } else if(uri.Host.Contains("youtu.be")) // youtu.be/<VIDEO_ID>
             {
                 video_id = uri.AbsolutePath[1..];
             }
@@ -121,7 +134,14 @@ namespace ytdl
             return video_id;
         }
 
-
+        /// <summary>
+        /// Initiates the download process for the video with the video id of <paramref name="video_id"/>.
+        /// </summary>
+        /// <param name="video_id">ID of the video to download</param>
+        /// <param name="out_dir">Output directory</param>
+        /// <param name="out_file">Output</param>
+        /// <param name="out_error"></param>
+        /// <returns></returns>
         static async Task DownloadVideoAsync(string video_id, string out_dir, string out_file, string out_error)
         {
             out_file = out_file.Replace("{video.id}", video_id);
@@ -137,19 +157,21 @@ namespace ytdl
                 var audio = videos.Where(video => video.AudioBitrate > 0 && video.AudioFormat == AudioFormat.Aac).OrderByDescending(video => video.AudioBitrate).ThenBy(video => video.ContentLength).First();
                 var video = videos.Where(video => video.Resolution <= 1080 && video.Format == VideoFormat.Mp4).OrderByDescending(video => video.Resolution).ThenByDescending(video => video.Fps).ThenBy(video => video.ContentLength).First();
 
+                // Make sure output directory exists
                 if (!Directory.Exists(out_dir))
                     Directory.CreateDirectory(out_dir);
 
 
                 var audio_file = $"{out_dir}/{video_id}{GetExtension(audio.AudioFormat)}";
                 var video_file = $"{out_dir}/{video_id}{GetExtension(video.Format)}";
-                var final_file = $"{out_dir}/{video_id} - {string.Join("_", video.Title.Split(Path.GetInvalidFileNameChars()))}{GetExtension(video.Format)}";
+                var final_file = $"{out_dir}/{string.Join("_", out_file.Replace("{video.id}", video_id).Replace("{video.title}", video.Title).Split(Path.GetInvalidFileNameChars()))}{GetExtension(video.Format)}";
 
-                if (audio.ContentLength > 0)
-                    await DownloadYouTubeData(youtube, audio, video_id, audio_file);
+                // Start downloading the audio
+                await DownloadYouTubeData(youtube, audio, video_id, audio_file);
                 Console.WriteLine();
-                if (video.ContentLength > 0)
-                    await DownloadYouTubeData(youtube, video, video_id, video_file);
+
+                // Start downloading the video
+                await DownloadYouTubeData(youtube, video, video_id, video_file);
                 Console.WriteLine();
 
                 Console.WriteLine($"Video '{video_id}' downloaded as audio and video! Now combining them with ffmpeg...");
@@ -213,6 +235,16 @@ namespace ytdl
                 _ => ".audio_unk"
             };
 
+
+        /// <summary>
+        /// Initiaties downloads and reports their progress to the console. <para />
+        /// Warning: The progress reporting is a little finnicky if multiple downloads are occurring at once
+        /// </summary>
+        /// <param name="youtube">YouTube downloader client</param>
+        /// <param name="video">Video data</param>
+        /// <param name="video_id">ID of the video</param>
+        /// <param name="file_path">Output file path</param>
+        /// <returns>Nothing</returns>
         static async Task DownloadYouTubeData(CustomYouTube youtube, YouTubeVideo video, string video_id, string file_path)
         {
             await youtube.DownloadAsync(new Uri(video.Uri), $"{file_path}", new Progress<Tuple<long, long>>(tup => {
